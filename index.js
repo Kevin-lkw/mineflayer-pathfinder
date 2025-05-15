@@ -36,7 +36,7 @@ function inject (bot) {
 
   bot.pathfinder = {}
 
-  bot.pathfinder.thinkTimeout = 5000 // ms
+  bot.pathfinder.thinkTimeout = 30000 // ms
   bot.pathfinder.tickTimeout = 40 // ms, amount of thinking per tick (max 50 ms)
   bot.pathfinder.searchRadius = -1 // in blocks, limits of the search area, -1: don't limit the search
   bot.pathfinder.enablePathShortcut = false // disabled by default as it can cause bugs in specific configurations
@@ -121,6 +121,7 @@ function inject (bot) {
   }
 
   function resetPath (reason, clearStates = true) {
+    console.log('[pathfinder] resetPath', reason)
     if (!stopPathing && path.length > 0) bot.emit('path_reset', reason)
     path = []
     if (digging) {
@@ -415,7 +416,7 @@ function inject (bot) {
       }
     }
   })
-
+  let count = 0
   function monitorMovement () {
     // Test freemotion
     if (stateMovements && stateMovements.allowFreeMotion && stateGoal && stateGoal.entity) {
@@ -438,14 +439,17 @@ function inject (bot) {
         resetPath('goal_moved', false)
       }
     }
-
-    if (astarContext && astartTimedout) {
-      const results = astarContext.compute()
-      results.path = postProcessPath(results.path)
-      pathFromPlayer(results.path)
-      bot.emit('path_update', results)
-      path = results.path
-      astartTimedout = results.status === 'partial'
+    count += 1
+    if (astarContext && astartTimedout) {      
+      if (count % 5 === 0){
+        // do not compute path every time
+        const results = astarContext.compute()
+        results.path = postProcessPath(results.path)
+        pathFromPlayer(results.path)
+        bot.emit('path_update', results)
+        path = results.path
+        astartTimedout = results.status === 'partial'
+      }
     }
 
     if (bot.pathfinder.LOSWhenPlacingBlocks && returningPos) {
@@ -458,9 +462,9 @@ function inject (bot) {
       if (stateGoal && stateMovements) {
         if (stateGoal.isEnd(bot.entity.position.floored())) {
           if (!dynamicGoal) {
-            bot.emit('goal_reached', stateGoal)
             stateGoal = null
             fullStop()
+            bot.emit('goal_reached', stateGoal)
           }
         } else if (!pathUpdated) {
           const results = bot.pathfinder.getPathTo(stateMovements, stateGoal)
@@ -476,8 +480,8 @@ function inject (bot) {
       return
     }
 
-    let nextPoint = path[0]
     const p = bot.entity.position
+    let nextPoint = path[0]
 
     // Handle digging
     if (digging || nextPoint.toBreak.length > 0) {
@@ -576,7 +580,7 @@ function inject (bot) {
     let dx = nextPoint.x - p.x
     const dy = nextPoint.y - p.y
     let dz = nextPoint.z - p.z
-    if (Math.abs(dx) <= 0.35 && Math.abs(dz) <= 0.35 && Math.abs(dy) < 1) {
+    if (Math.abs(dx) <= 0.25 && Math.abs(dz) <= 0.25 && Math.abs(dy) < 1) { // modified to ensure jump can success
       // arrived at next point
       lastNodeTime = performance.now()
       if (stopPathing) {
@@ -588,8 +592,8 @@ function inject (bot) {
         // If the block the bot is standing on is not a full block only checking for the floored position can fail as
         // the distance to the goal can get greater then 0 when the vector is floored.
         if (!dynamicGoal && stateGoal && (stateGoal.isEnd(p.floored()) || stateGoal.isEnd(p.floored().offset(0, 1, 0)))) {
-          bot.emit('goal_reached', stateGoal)
           stateGoal = null
+          bot.emit('goal_reached', stateGoal)
         }
         fullStop()
         return
@@ -604,34 +608,43 @@ function inject (bot) {
       dz = nextPoint.z - p.z
     }
 
-    bot.look(Math.atan2(-dx, -dz), 0)
-    bot.setControlState('forward', true)
-    bot.setControlState('jump', false)
-
-    if (bot.entity.isInWater) {
-      bot.setControlState('jump', true)
-      bot.setControlState('sprint', false)
-    } else if (stateMovements.allowSprinting && physics.canStraightLine(path, true)) {
-      bot.setControlState('jump', false)
-      bot.setControlState('sprint', true)
-    } else if (stateMovements.allowSprinting && physics.canSprintJump(path)) {
-      bot.setControlState('jump', true)
-      bot.setControlState('sprint', true)
-    } else if (physics.canStraightLine(path)) {
-      bot.setControlState('jump', false)
-      bot.setControlState('sprint', false)
-    } else if (physics.canWalkJump(path)) {
-      bot.setControlState('jump', true)
-      bot.setControlState('sprint', false)
-    } else {
-      bot.setControlState('forward', false)
-      bot.setControlState('sprint', false)
+    let angle = Math.atan2(-dx, -dz)
+    let res = bot.checklook(angle,0)
+    // console.log('[pathfinder] res',res)
+    if (res === 0) {
+      bot.clearControlStates()
+      bot.look(angle, 0)
     }
+    else if (res === 1){
+      bot.setControlState('forward', true)
+      bot.setControlState('jump', false)
 
-    // check for futility
-    if (performance.now() - lastNodeTime > 3500) {
-      // should never take this long to go to the next node
-      resetPath('stuck')
+      if (bot.entity.isInWater) {
+        bot.setControlState('jump', true)
+        bot.setControlState('sprint', false)
+      } else if (stateMovements.allowSprinting && physics.canStraightLine(path, true)) {
+        bot.setControlState('jump', false)
+        bot.setControlState('sprint', true)
+      } else if (stateMovements.allowSprinting && physics.canSprintJump(path)) {
+        bot.setControlState('jump', true)
+        bot.setControlState('sprint', true)
+      } else if (physics.canStraightLine(path)) {
+        bot.setControlState('jump', false)
+        bot.setControlState('sprint', false)
+      } else if (physics.canWalkJump(path)) {
+        bot.setControlState('jump', true)
+        bot.setControlState('sprint', false)
+      } else {
+        bot.setControlState('forward', false)
+        bot.setControlState('sprint', false)
+      }
+
+      // check for futility
+      if (performance.now() - lastNodeTime > 3500) {
+        // should never take this long to go to the next node
+        bot.emit('path_stuck')
+        resetPath('stuck')
+      }
     }
   }
 }
